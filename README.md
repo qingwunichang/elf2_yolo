@@ -49,15 +49,3 @@ sudo apt install gstreamer1.0-plugins-base \
                  gstreamer1.0-tools                # 常用元素和 gst-launch
 ```
 
-## 安装语音相关模块
-
-```
-sudo apt update
-sudo apt install -y libportaudio2 portaudio19-dev libasound2-dev python3-dev build-essential
-python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install sounddevice
-sudo apt install -y libsndfile1 libsndfile1-dev python3-dev build-essential
-python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install soundfile
-```
-

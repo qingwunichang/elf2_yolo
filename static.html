@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>基于ELF 2的低光条件下的目标检测系统</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+             color: #2d3748;
+             min-height: 100vh;
+             display: flex;
+             flex-direction: column;
+             align-items: center;
+             justify-content: center;
+             padding: 2rem 1rem;
+             position: relative;
+             overflow-x: hidden;
+         }
+        
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grain" width="100" height="100" patternUnits="userSpaceOnUse"><circle cx="50" cy="50" r="0.5" fill="%23ffffff" opacity="0.1"/></pattern></defs><rect width="100" height="100" fill="url(%23grain)"/></svg>') repeat;
+            pointer-events: none;
+            z-index: -1;
+        }
+        
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            animation: fadeInUp 0.8s ease-out;
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        
+        h1 {
+            color: #ffffff;
+            font-size: 2.5rem;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 2rem;
+            text-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            letter-spacing: -0.02em;
+        }
+        
+        .upload-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 2.5rem;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1), 0 0 0 1px rgba(255,255,255,0.1);
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto 2rem;
+            transition: all 0.3s ease;
+        }
+        
+        .upload-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 30px 60px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.2);
+        }
+        
+        label {
+            font-weight: 600;
+            display: block;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+            color: #4a5568;
+        }
+        
+        .file-input-wrapper {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+        
+        input[type=file] {
+            width: 100%;
+            padding: 1rem;
+            border: 2px dashed #cbd5e0;
+            border-radius: 12px;
+            font-size: 1rem;
+            background: #f7fafc;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        input[type=file]:hover {
+            border-color: #667eea;
+            background: #edf2f7;
+        }
+        
+        input[type=file]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .upload-btn {
+            width: 100%;
+            padding: 1rem 2rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .upload-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s;
+        }
+        
+        .upload-btn:hover::before {
+            left: 100%;
+        }
+        
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+        }
+        
+        .upload-btn:active {
+            transform: translateY(0);
+        }
+        
+        #status {
+            text-align: center;
+            margin: 1.5rem 0;
+            font-weight: 600;
+            min-height: 24px;
+            color: #38a169;
+            font-size: 1.1rem;
+            animation: pulse 2s infinite;
+        }
+        
+        .result-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 2.5rem;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1), 0 0 0 1px rgba(255,255,255,0.1);
+            width: 100%;
+            max-width: 1000px;
+            margin: 0 auto;
+            animation: slideInUp 0.6s ease-out;
+        }
+        
+        @keyframes slideInUp {
+            from {
+                opacity: 0;
+                transform: translateY(50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .result-card h2 {
+            margin: 0 0 2rem 0;
+            color: #2d3748;
+            font-size: 1.8rem;
+            font-weight: 700;
+            text-align: center;
+            position: relative;
+            padding-bottom: 1rem;
+        }
+        
+        .result-card h2::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60px;
+            height: 3px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 2px;
+        }
+        
+        .comparison-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        @media (max-width: 768px) {
+            .comparison-container {
+                grid-template-columns: 1fr;
+                gap: 1.5rem;
+            }
+        }
+        
+        .media-container {
+            text-align: center;
+            padding: 1.5rem;
+            background: #f8fafc;
+            border-radius: 16px;
+            border: 1px solid #e2e8f0;
+            transition: all 0.3s ease;
+        }
+        
+        .media-container:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+        }
+        
+        .media-container h3 {
+            color: #4a5568;
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+        
+        img, video {
+            max-width: 100%;
+            border-radius: 12px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+            transition: all 0.3s ease;
+        }
+        
+        img:hover, video:hover {
+            transform: scale(1.02);
+            box-shadow: 0 12px 35px rgba(0,0,0,0.2);
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 基于ELF 2的低光条件下的目标检测系统</h1>
+
+        <!-- 文件上传表单 -->
+        <div class="upload-card">
+            <form id="uploadForm" enctype="multipart/form-data">
+                <label for="file">📁 选择文件（图片或视频）</label>
+                <div class="file-input-wrapper">
+                    <input type="file" id="file" name="file" accept="image/*,video/*" required>
+                </div>
+                <button type="submit" class="upload-btn">🚀 上传并开始处理</button>
+            </form>
+        </div>
+
+        <div id="status"></div>
+
+        <!-- 检测结果区域：原始和处理后的图像或视频 -->
+        <div id="resultSection" class="result-card" style="display: none;">
+            <h2>✨ 检测结果</h2>
+            <div class="comparison-container">
+                <!-- 原始图像/视频 -->
+                <div class="media-container">
+                    <h3>📷 原始文件</h3>
+                    <img id="originalImage" src="" style="display:none;">
+                    <video id="originalVideo" width="100%" controls style="display:none;">
+                        <source id="originalVideoSource" type="video/mp4">
+                    </video>
+                </div>
+
+                <!-- 处理后图像/视频 -->
+                <div class="media-container">
+                    <h3>🎨 处理结果</h3>
+                    <img id="outputImage" src="" style="display:none;">
+                    <video id="outputVideo" width="100%" controls style="display:none;">
+                        <source id="videoSource" type="video/mp4">
+                    </video>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById("uploadForm").addEventListener("submit", async function(event) {
+            event.preventDefault();
+
+            const formData = new FormData();
+            const fileInput = document.getElementById("file");
+            const file = fileInput.files[0];
+            formData.append("file", file);
+
+            // 显示状态
+            document.getElementById("status").innerHTML = '<div class="loading"></div>文件上传成功，正在处理...';
+            document.getElementById("resultSection").style.display = 'none';
+
+            // 提交到后端
+            const response = await fetch("http://10.13.1.152:5000/process_file", {
+                method: "POST",
+                body: formData
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                document.getElementById("status").innerText = "处理完成！";
+                document.getElementById("resultSection").style.display = 'block';
+
+                const originalUrl = URL.createObjectURL(file);  // 本地预览原始图像/视频
+
+                if (result.file_type === "image") {
+                    // 显示原图
+                    document.getElementById("originalImage").src = originalUrl;
+                    document.getElementById("originalImage").style.display = 'block';
+                    document.getElementById("originalVideo").style.display = 'none';
+
+                    // 显示处理后图
+                    document.getElementById("outputImage").src = "http://10.13.1.152:5000/output/" + result.output_image_path;
+                    document.getElementById("outputImage").style.display = 'block';
+                    document.getElementById("outputVideo").style.display = 'none';
+                } else if (result.file_type === "video") {
+                    // 显示原视频
+                    document.getElementById("originalVideoSource").src = originalUrl;
+                    document.getElementById("originalVideo").load();
+                    document.getElementById("originalVideo").style.display = 'block';
+                    document.getElementById("originalImage").style.display = 'none';
+
+                    // 显示处理后视频
+                    document.getElementById("videoSource").src = "http://10.13.1.152:5000/output/" + result.output_video_path;
+                    document.getElementById("outputVideo").load();
+                    document.getElementById("outputVideo").style.display = 'block';
+                    document.getElementById("outputImage").style.display = 'none';
+                }
+            } else {
+                document.getElementById("status").innerText = "处理失败：" + result.error;
+            }
+        });
+    </script>
+</body>
+</html>

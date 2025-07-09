@@ -25,7 +25,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 # ------------------ 环境变量 ------------------
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = "/usr/lib/x86_64-linux-gnu/qt5/plugins/platforms"
 os.environ["XAUTHORITY"] = "/run/user/1000/gdm/Xauthority"
-# os.environ["DISPLAY"] = ":0"
+os.environ["DISPLAY"] = ":0"
 
 # ------------------ 配置 ------------------
 DEVICE = "/dev/video11"
@@ -115,6 +115,8 @@ class RKNNStreamApp(QtWidgets.QWidget):
         self.setLayout(layout)
         self.showMaximized()
 
+        # self.showFullScreen()
+
         self.cam = GSTCamera(device=DEVICE, width=GSTCamera_SIZE[0], height=GSTCamera_SIZE[1])
 
         self.rknn_yolo = RKNNLite()
@@ -127,7 +129,6 @@ class RKNNStreamApp(QtWidgets.QWidget):
 
         self.processor = YOLOPostProcessor(ANCHOR_PATH, CLASSES, OBJ_THRESH, NMS_THRESH, IMG_SIZE)
 
-        self.frame_queue = queue.Queue(maxsize=1)
         self.enhancement_queue = queue.Queue(maxsize=1)
         self.imgfusion_queue = queue.Queue(maxsize=1)
         self.yolo_queue = queue.Queue(maxsize=1)
@@ -138,6 +139,10 @@ class RKNNStreamApp(QtWidgets.QWidget):
         self.total_latency = 0.0
         self.latency_count = 0
         self.start_time = time.time()
+        self.timing_records = []
+        self.fps_records = []
+        self.fps_index = 0
+        self.frame_index = 0
 
         self.raw_window = RawFrameWindow()
 
@@ -147,26 +152,30 @@ class RKNNStreamApp(QtWidgets.QWidget):
         self.imgfusion_thread = threading.Thread(target=self.imgfusion_worker, daemon=True)
         self.imgfusion_thread.start()
 
+        self.yoly_thread = threading.Thread(target=self.yolo_worker, daemon=True)
+        self.yoly_thread.start()
+
         self.draw_thread = threading.Thread(target=self.draw_worker, daemon=True)
         self.draw_thread.start()
 
         self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.yolo)
-        self.timer.start(1)
+        self.timer.timeout.connect(self.update_img)
+        self.timer.start(30)
+
 
     def img_enhancement_worker(self):
         while True:
-            timestamp = time.time()  # 创建时间戳
+            t1 = time.time()  # 创建时间戳
             frame = self.cam.read()
             if frame is None:
-                # print(f"Warning: Received None frame.")
+                #   print(f"Warning: Received None frame.")
                 continue  # 继续读取下一个帧
 
             enhanced = enhance_image(frame)
 
             # 将原始图像和增强图像放入共享队列
             try:
-                self.enhancement_queue.put_nowait((frame, enhanced, timestamp))
+                self.enhancement_queue.put_nowait((frame, enhanced, t1))
                 # print("Warning: enhancement_queue is full. Discarding frame.")
             except queue.Full:
                 continue
@@ -174,11 +183,12 @@ class RKNNStreamApp(QtWidgets.QWidget):
             # out_t = time.time()
             # print(f"低光增强：{(out_t - timestamp) * 1000:.2f}ms")
 
+
     def imgfusion_worker(self):
         while True:
-            # start_time = time.time()
+            t2 = time.time()
             try:
-                origin, enhancement, timestamp = self.enhancement_queue.get(timeout=1.0)
+                origin, enhancement, t1 = self.enhancement_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
 
@@ -197,73 +207,58 @@ class RKNNStreamApp(QtWidgets.QWidget):
 
             # 将融合图像放入共享队列
             try:
-                self.imgfusion_queue.put_nowait((origin, fusionimg, timestamp))
+                self.imgfusion_queue.put_nowait((origin, fusionimg, t1, t2))
             except queue.Full:
                 pass
             # end_time = time.time()
             # print(f"图像融合:{(end_time - start_time) * 1000:.2f}ms")
 
-    def yolo(self):
-        # start_time = time.time()
-        try:
-            origin, fusionimg, timestamp = self.imgfusion_queue.get_nowait()
-        except queue.Empty:
-            print("Warning: imgfusion_queue is empty. Skipping yolo.")
-            return
-        fusionimg_tensor = fusionimg.transpose(2, 0, 1)
-        fusionimg_tensor = np.expand_dims(fusionimg_tensor, axis=0)
 
-        outputs = self.rknn_yolo.inference(inputs=[fusionimg_tensor], data_format='nchw')
-        try:
-            self.yolo_queue.put_nowait((origin, outputs, fusionimg))
-        except queue.Full:
-            pass
-        # end_time = time.time()
-        # print(f"yolo检测:{(end_time - start_time) * 1000:.2f}ms")
+    def yolo_worker(self):
+        while True:
+            t3 = time.time()
+            try:
+                origin, fusionimg, t1, t2= self.imgfusion_queue.get(timeout=1.0)
+            except queue.Empty:
+                print("Warning: imgfusion_queue is empty. Skipping yolo.")
+                return
+            fusionimg_tensor = fusionimg.transpose(2, 0, 1)
+            fusionimg_tensor = np.expand_dims(fusionimg_tensor, axis=0)
 
-        self.frame_count += 1
+            outputs = self.rknn_yolo.inference(inputs=[fusionimg_tensor], data_format='nchw')
+            try:
+                self.yolo_queue.put_nowait((origin, outputs, fusionimg, t1, t2, t3))
+            except queue.Full:
+                pass
+            # end_time = time.time()
+            # print(f"yolo检测:{(end_time - start_time) * 1000:.2f}ms")
 
-        # 更新图像显示
-        self.update_img()
-
-        current_time = time.time()
-        elapsed = current_time - self.start_time
-        latency = current_time - timestamp
-        self.total_latency += latency
-        self.latency_count += 1
-        if elapsed >= 1.0:
-            fps = self.frame_count / elapsed
-            avg_latency = (self.total_latency / self.latency_count) * 1000
-            self.setWindowTitle(f"RKNN 检测 | FPS: {fps:.2f} | 延迟: {avg_latency:.2f}ms")
-            self.frame_count = 0
-            self.total_latency = 0.0
-            self.latency_count = 0
-            self.start_time = current_time
 
     def draw_worker(self):
         while True:
-            # start_time = time.time()
+            t4 = time.time()
             try:
-                origin, outputs, fusionimg = self.yolo_queue.get(timeout=1.0)
+                origin, outputs, fusionimg, t1, t2, t3 = self.yolo_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
             detection_outputs = [np.squeeze(out, axis=0) for out in outputs[:3]]
             boxes, classes, scores = self.processor(detection_outputs)
-            display_img = self.processor.draw(fusionimg, boxes, scores, classes)
+            display_img = self.processor.dr
+            aw(fusionimg, boxes, scores, classes)
             # 把绘制好的图像送回主线程
             try:
-                self.draw_queue.put_nowait((origin, display_img))
+                self.draw_queue.put_nowait((origin, display_img, t1, t2, t3, t4))
             except queue.Full:
-
                 pass
             # end_time = time.time()
             # print(f"画框:{(end_time - start_time) * 1000:.2f}ms")
 
     def update_img(self):
+        t5 = time.time()
         try:
-            origin, display_img = self.draw_queue.get_nowait()
+            origin, display_img, t1, t2, t3, t4 = self.draw_queue.get_nowait()
         except queue.Empty:
-            print("draw_queue is empty")
+            # print("draw_queue is empty")
             # 跳过此时没有新图像的数据
             return
 
@@ -277,15 +272,62 @@ class RKNNStreamApp(QtWidgets.QWidget):
         pixmap1 = QtGui.QPixmap.fromImage(qimage1)
         pixmap2 = QtGui.QPixmap.fromImage(qimage2)
 
-        if self.raw_label.pixmap() != pixmap1:  # 检查是否需要更新
-            self.raw_label.setPixmap(pixmap1)
+        self.raw_label.setPixmap(pixmap1)
+        self.enh_label.setPixmap(pixmap2)
 
-        if self.enh_label.pixmap() != pixmap2:  # 检查是否需要更新
-            self.enh_label.setPixmap(pixmap2)
+        self.frame_count += 1
 
+        current_time = time.time()
+        elapsed = current_time - self.start_time
+        latency = current_time - t1
+
+        # enhance_time = (t2 - t1) * 1000
+        # fusion_time = (t3 - t2) * 1000
+        # yolo_time = (t4 - t3) * 1000
+        # draw_time = (t5 - t4) * 1000
+        # total_latency = (current_time - t1) * 1000
+        #
+        # self.timing_records.append({
+        #     "帧编号": self.frame_index,
+        #     "增强(ms)": enhance_time,
+        #     "融合(ms)": fusion_time,
+        #     "yolo(ms)": yolo_time,
+        #     "画框(ms)": draw_time,
+        #     "总时延(ms)": total_latency,
+        #     "显示时间戳": current_time
+        # })
+        #
+        # self.frame_index += 1
+        #
+        self.total_latency += latency
+        self.latency_count += 1
+
+        if elapsed >= 1.0:
+            fps = self.frame_count / elapsed
+            avg_latency = (self.total_latency / self.latency_count) * 1000
+            self.fps_records.append({"FPS":fps})
+            self.fps_index += 1
+            self.setWindowTitle(f"RKNN 检测 | FPS: {fps:.2f} | 延迟: {avg_latency:.2f}ms")
+            self.frame_count = 0
+            self.total_latency = 0.0
+            self.latency_count = 0
+            self.start_time = current_time
+
+        # print(f"self.fps_index = {self.fps_index}")
+        # if self.fps_index == 10:
+        #     import pandas as pd
+        #     df = pd.DataFrame(self.fps_records)
+        #     df.to_csv("timing_fps.csv", index=False)
+        #     print("ok")
+
+        # print(f"self.frame_index = {self.frame_index}")
+        # if self.frame_index == 1000:
+        #     import pandas as pd
+        #     df = pd.DataFrame(self.fps_records)
+        #     df.to_csv("timing_fps.csv", index=False)
+        #     print("ok")
 
     def closeEvent(self, event):
-        self.frame_queue.put(None)
         self.cam.stop()
         self.rknn_imgfusion.release()
         self.rknn_yolo.release()

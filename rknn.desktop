@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=RKNN Stream
+Exec=/home/elf/pythonProject/start_rknn.sh
+X-GNOME-Autostart-enabled=true
+Terminal=false
